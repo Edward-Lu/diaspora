@@ -1,70 +1,100 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-class HandleValidator < ActiveModel::Validator
-  def validate(document)
-    unless document.diaspora_handle == document.person.diaspora_handle
-      document.errors[:base] << "Diaspora handle and person handle must match"
+class Comment < ActiveRecord::Base
+
+  include Diaspora::Federated::Base
+  
+  include Diaspora::Guid
+  include Diaspora::Relayable
+
+  include Diaspora::Taggable
+  include Diaspora::Likeable
+
+  acts_as_taggable_on :tags
+  extract_tags_from :text
+  before_create :build_tags
+
+  xml_attr :text
+  xml_attr :diaspora_handle
+
+  belongs_to :commentable, :touch => true, :polymorphic => true
+  alias_attribute :post, :commentable
+  belongs_to :author, :class_name => 'Person'
+  
+  delegate :name, to: :author, prefix: true
+  delegate :comment_email_subject, to: :parent
+  delegate :author_name, to: :parent, prefix: true
+
+  validates :text, :presence => true, :length => {:maximum => 65535}
+  validates :parent, :presence => true #should be in relayable (pending on fixing Message)
+
+  scope :including_author, includes(:author => :profile)
+  scope :for_a_stream, including_author.merge(order('created_at ASC'))
+
+  before_save do
+    self.text.strip! unless self.text.nil?
+  end
+
+  after_save do
+    self.post.touch
+  end
+
+  after_create do
+    self.parent.update_comments_counter
+  end
+
+  after_destroy do
+    self.parent.update_comments_counter
+  end
+
+  def diaspora_handle
+    self.author.diaspora_handle
+  end
+
+  def diaspora_handle= nh
+    self.author = Webfinger.new(nh).fetch
+  end
+
+  def notification_type(user, person)
+    if self.post.author == user.person
+      return Notifications::CommentOnPost
+    elsif self.post.comments.where(:author_id => user.person.id) != [] && self.author_id != user.person.id
+      return Notifications::AlsoCommented
+    else
+      return false
     end
   end
-end
 
-class Comment
-  require File.join(Rails.root, 'lib/diaspora/websocket')
-  include MongoMapper::Document
-  include ROXML
-  include Diaspora::Webhooks
-  include Encryptable
-  include Diaspora::Socketable
-
-  xml_reader :text
-  xml_reader :diaspora_handle
-  xml_reader :post_id
-  xml_reader :_id
-
-  key :text,      String
-  key :post_id,   ObjectId
-  key :person_id, ObjectId
-  key :diaspora_handle, String
-
-  belongs_to :post,   :class_name => "Post"
-  belongs_to :person, :class_name => "Person"
-
-  validates_presence_of :text, :diaspora_handle
-  validates_with HandleValidator
-
-
-  timestamps!
-
-  #ENCRYPTION
-
-  xml_reader :creator_signature
-  xml_reader :post_creator_signature
-
-  key :creator_signature, String
-  key :post_creator_signature, String
-
-  def signable_accessors
-    accessors = self.class.roxml_attrs.collect{|definition|
-      definition.accessor}
-    accessors.delete 'person'
-    accessors.delete 'creator_signature'
-    accessors.delete 'post_creator_signature'
-    accessors
+  def parent_class
+    Post
   end
 
-  def signable_string
-    signable_accessors.collect{|accessor|
-      (self.send accessor.to_sym).to_s}.join ';'
+  def parent
+    self.post
   end
 
-  def verify_post_creator_signature
-    verify_signature(post_creator_signature, post.person)
+  def parent= parent
+    self.post = parent
   end
 
-  def signature_valid?
-    verify_signature(creator_signature, person)
+  def text= text
+     self[:text] = text.to_s.strip #to_s if for nil, for whatever reason
   end
 
+  class Generator < Federated::Generator
+    def self.federated_class
+      Comment
+    end
+
+    def initialize(person, target, text)
+      @text = text
+      super(person, target)
+    end
+
+    def relayable_options
+      {:post => @target, :text => @text}
+    end
+  end
 end

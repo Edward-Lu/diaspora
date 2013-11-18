@@ -1,25 +1,38 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
 # Use this hook to configure devise mailer, warden hooks and so forth. The first
 # four configuration values can also be set straight in your models.
+
+class ActionController::Responder
+  def to_mobile
+    default_render
+  rescue ActionView::MissingTemplate => e
+    navigation_behavior(e)
+  end
+end
+
 Devise.setup do |config|
   # Configure the e-mail address which will be shown in DeviseMailer.
-  if APP_CONFIG[:smtp_sender_address]
-    config.mailer_sender = APP_CONFIG[:smtp_sender_address]
-  else
-    unless Rails.env == 'test'
-      Rails.logger.warn("No smtp sender address set, mail may fail.")
-      puts "WARNING: No smtp sender address set, mail may fail." 
-    end
-    config.mailer_sender = "please-change-me@config-initializers-devise.com" 
-  end
-
   # ==> ORM configuration
   # Load and configure the ORM. Supports :active_record (default), :mongoid
   # (bson_ext recommended) and :data_mapper (experimental).
-  require 'devise/orm/mongo_mapper'
+  require 'devise/orm/active_record'
+
+  #mail setup
+  if AppConfig.mail.sender_address.present?
+    config.mailer_sender = AppConfig.mail.sender_address
+  elsif AppConfig.mail.enable?
+    unless Rails.env == 'test'
+      Rails.logger.warn("No smtp sender address set, mail may fail.")
+      puts "WARNING: No smtp sender address set, mail may fail."
+    end
+    config.mailer_sender = "please-change-me@config-initializers-devise.com"
+  end
+
+  # Configure the class responsible to send e-mails.
+  config.mailer = "DiasporaDeviseMailer"
 
   # ==> Configuration for any authentication mechanism
   # Configure which keys are used when authenticating an user. By default is
@@ -27,7 +40,7 @@ Devise.setup do |config|
   # authenticating an user, both parameters are required. Remember that those
   # parameters are used only when authenticating and not when retrieving from
   # session. If you need permissions, you should implement that in a before filter.
-   config.authentication_keys = [ :username ]
+  config.authentication_keys = [:username]
 
   # Tell if authentication through request.params is enabled. True by default.
   # config.params_authenticatable = true
@@ -41,22 +54,18 @@ Devise.setup do |config|
   # ==> Configuration for :database_authenticatable
   # For bcrypt, this is the cost for hashing the password and defaults to 10. If
   # using other encryptors, it sets how many times you want the password re-encrypted.
-  config.stretches = 10
-
-  # Define which will be the encryption algorithm. Devise also supports encryptors
-  # from others authentication tools as :clearance_sha1, :authlogic_sha512 (then
-  # you should set stretches above to 20 for default behavior) and :restful_authentication_sha1
-  # (then you should set stretches to 10, and copy REST_AUTH_SITE_KEY to pepper)
-  config.encryptor = :bcrypt
+  config.stretches = Rails.env.test? ? 1 : 10
 
   # Setup a pepper to generate the encrypted password.
   config.pepper = "065eb8798b181ff0ea2c5c16aee0ff8b70e04e2ee6bd6e08b49da46924223e39127d5335e466207d42bf2a045c12be5f90e92012a4f05f7fc6d9f3c875f4c95b"
+
+  config.reset_password_within = 2.days
 
   # ==> Configuration for :invitable
   # Time interval where the invitation token is valid (default: 0).
   # If invite_for is 0 or nil, the invitation will never expire.
   # config.invite_for = 2.weeks
-  
+
   # ==> Configuration for :confirmable
   # The time you want to give your user to confirm his account. During this time
   # he will be able to access your application without confirming. Default is nil.
@@ -64,15 +73,15 @@ Devise.setup do |config|
   # You can use this to let your user access some features of your application
   # without confirming the account, but blocking it after a certain period
   # (ie 2 days).
-  # config.confirm_within = 2.days
+  # config.allow_unconfirmed_access_for = 2.days
 
   # ==> Configuration for :rememberable
   # The time the user will be remembered without asking for credentials again.
-  # config.remember_for = 2.weeks
+  config.remember_for = 2.weeks
 
   # ==> Configuration for :validatable
   # Range for password length
-  # config.password_length = 6..20
+  # config.password_length = 8..20
 
   # Regex to use to validate the email address
   # config.email_regexp = /^([\w\.%\+\-]+)@([\w\-]+\.)+([\w]{2,})$/i
@@ -80,7 +89,7 @@ Devise.setup do |config|
   # ==> Configuration for :timeoutable
   # The time you want to timeout the user session without activity. After this
   # time the user will be asked for credentials again.
-  # config.timeout_in = 10.minutes
+  # config.timeout_in = 1.day
 
   # ==> Configuration for :lockable
   # Defines which strategy will be used to lock an account.
@@ -104,7 +113,8 @@ Devise.setup do |config|
 
   # ==> Configuration for :token_authenticatable
   # Defines name of the authentication token params key
-  # config.token_authentication_key = :auth_token
+  config.token_authentication_key = :auth_token
+  config.skip_session_storage << :token_auth
 
   # ==> Scopes configuration
   # Turn scoped views on. Before rendering "sessions/new", it will first check for
@@ -130,6 +140,11 @@ Devise.setup do |config|
   # If you have any extra navigational formats, like :iphone or :mobile, you
   # should add them to the navigational formats lists. Default is [:html]
   # config.navigational_formats = [:html, :iphone]
+  config.navigational_formats = [:"*/*", "*/*", :html, :mobile]
+
+  # Looks up user emails ignoring case
+  # for forgot password, sign up, sign in, etc
+  config.case_insensitive_keys = [:email]
 
   # ==> Warden configuration
   # If you want to use other strategies, that are not (yet) supported by Devise,
@@ -144,4 +159,8 @@ Devise.setup do |config|
   #   end
   #   manager.default_strategies(:scope => :user).unshift :twitter_oauth
   # end
+
+  # Sign out via a DELETE request
+  config.sign_out_via = :delete
 end
+

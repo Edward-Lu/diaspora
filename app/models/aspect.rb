@@ -1,48 +1,38 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-class Aspect
-  include MongoMapper::Document
+class Aspect < ActiveRecord::Base
+  belongs_to :user
 
-  key :name,        String
-  key :request_ids, Array
-  key :post_ids,    Array
+  has_many :aspect_memberships, :dependent => :destroy
+  has_many :contacts, :through => :aspect_memberships
 
-  many :contacts,   :foreign_key => 'aspect_ids', :class_name => 'Contact'
-  many :requests, :in => :request_ids, :class_name => 'Request'
-  many :posts,    :in => :post_ids,    :class_name => 'Post'
+  has_many :aspect_visibilities
+  has_many :posts, :through => :aspect_visibilities, :source => :shareable, :source_type => 'Post'
+  has_many :photos, :through => :aspect_visibilities, :source => :shareable, :source_type => 'Photo'
 
-  belongs_to :user, :class_name => 'User'
+  validates :name, :presence => true, :length => { :maximum => 20 }
 
-  validates_presence_of :name
-  validates_length_of :name, :maximum => 20
-  validates_uniqueness_of :name, :scope => :user_id
-  attr_accessible :name
-  
+  validates_uniqueness_of :name, :scope => :user_id, :case_sensitive => false
+
   before_validation do
     name.strip!
   end
-  
-  timestamps!
 
   def to_s
     name
   end
-  
-  def person_objects
-    person_ids = people.map{|x| x.person_id}
-    Person.all(:id.in => person_ids)
-  end
 
-  def as_json(opts = {})
-    {
-      :aspect => {
-        :name   => self.name,
-        :people => self.people.each{|person| person.as_json},
-        :posts  => self.posts.each {|post|   post.as_json  },
-      }
-    }
+  def << (shareable)
+    case shareable
+      when Post
+        self.posts << shareable
+      when Photo
+        self.photos << shareable
+      else
+        raise "Unknown shareable type '#{shareable.class.base_class.to_s}'"
+    end
   end
 
 end

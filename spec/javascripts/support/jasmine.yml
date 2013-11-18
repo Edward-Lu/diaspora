@@ -3,7 +3,6 @@
 # Return an array of filepaths relative to src_dir to include before jasmine specs.
 # Default: []
 #
-# EXAMPLE:
 #
 # src_files:
 #   - lib/source1.js
@@ -11,10 +10,8 @@
 #   - dist/**/*.js
 #
 src_files:
-  - public/javascripts/vendor/jquery144.js
-  - public/javascripts/vendor/jquery-ui-1.8.6.custom.min.js
-  - public/javascripts/vendor/jquery.tipsy.js
-  - public/javascripts/aspect-edit.js
+  # Precompile all scripts together for the test environment
+  - assets/jasmine-load-all.js
 
 # stylesheets
 #
@@ -28,7 +25,13 @@ src_files:
 #   - stylesheets/*.css
 #
 stylesheets:
-  - stylesheets/**/*.css
+  - assets/blueprint.css
+  - assets/bootstrap.css
+  - assets/default.css
+  - assets/login.css
+  #- assets/mobile.css
+  - assets/new-templates.css
+  #- assets/rtl.css
 
 # helpers
 #
@@ -38,7 +41,7 @@ stylesheets:
 # EXAMPLE:
 #
 # helpers:
-#   - helpers/**/*.js
+#   - helpers/**/*.jsview
 #
 helpers:
   - helpers/**/*.js
@@ -54,7 +57,7 @@ helpers:
 #   - **/*[sS]pec.js
 #
 spec_files:
-  - **/*[sS]pec.js
+  - "**/**/*[sS]pec.js"
 
 # src_dir
 #

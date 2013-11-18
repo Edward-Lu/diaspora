@@ -1,175 +1,158 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
 require 'spec_helper'
 
 describe Request do
-  let(:user)   { make_user }
-  let(:user2)  { make_user }
-  let(:person) { Factory :person }
-  let(:aspect) { user.aspects.create(:name => "dudes") }
-  let(:request){ user.send_contact_request_to user2.person, aspect }
+  before do
+    @aspect = alice.aspects.first
+  end
 
   describe 'validations' do
     before do
-      @request = Request.instantiate(:from => user.person, :to => user2.person, :into => aspect) 
+      @request = Request.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
     end
+
     it 'is valid' do
+      @request.sender.should == alice.person
+      @request.recipient.should   == eve.person
+      @request.aspect.should == @aspect
       @request.should be_valid
-      @request.from.should == user.person
-      @request.to.should   == user2.person
-      @request.into.should == aspect
     end
+
     it 'is from a person' do
-      @request.from = nil
+      @request.sender = nil
       @request.should_not be_valid
     end
+
     it 'is to a person' do
-      @request.to = nil
+      @request.recipient = nil
       @request.should_not be_valid
     end
+
     it 'is not necessarily into an aspect' do
-      @request.into = nil
+      @request.aspect = nil
       @request.should be_valid
     end
-    it 'is not a duplicate of an existing pending request' do
-      request
+
+    it 'is not from an existing friend' do
+      Contact.create(:user => eve, :person => alice.person, :aspects => [eve.aspects.first])
       @request.should_not be_valid
     end
-    it 'is not to an existing friend' do
-      connect_users(user, aspect, user2, user2.aspects.create(:name => 'new aspect'))
+
+    it 'is not to yourself' do
+      @request = Request.diaspora_initialize(:from => alice.person, :to => alice.person, :into => @aspect)
       @request.should_not be_valid
     end
   end
 
-  describe '#request_from_me' do
-    it 'recognizes requests from me' do
-      user.request_from_me?(request).should be_true
-    end
+  describe '#notification_type' do
+    it 'returns request_accepted' do
+      person = FactoryGirl.build:person
 
-    it 'recognized when a request is not from me' do 
-      user2.request_from_me?(request).should be_false
+      request = Request.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
+      alice.contacts.create(:person_id => person.id)
+
+      request.notification_type(alice, person).should == Notifications::StartedSharing
     end
   end
 
-  context 'quering request through user' do
-    it 'finds requests for that user' do
-      request
-      user2.reload
-      user2.requests_for_me.detect{|r| r.from == user.person}.should_not be_nil
+  describe '#subscribers' do
+    it 'returns an array with to field on a request' do
+      request = Request.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
+      request.subscribers(alice).should =~ [eve.person]
     end
   end
 
-  describe '#original_request' do
-    it 'returns nil on a request from me' do
-      request
-      user.original_request(request).should be_nil
+  describe '#receive' do
+    it 'creates a contact' do
+      request = Request.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
+      lambda{
+        request.receive(eve, alice.person)
+      }.should change{
+        eve.contacts(true).size
+      }.by(1)
     end
-    it 'returns the original request on a response to a request from me' do
-      new_request = request.reverse_for(user2)
-      user.original_request(new_request).should == request
+
+    it 'sets mutual if a contact already exists' do
+      alice.share_with(eve.person, alice.aspects.first)
+
+      lambda {
+        Request.diaspora_initialize(:from => eve.person, :to => alice.person,
+                                    :into => eve.aspects.first).receive(alice, eve.person)
+      }.should change {
+        alice.contacts.find_by_person_id(eve.person.id).mutual?
+      }.from(false).to(true)
+
+    end
+
+    it 'sets sharing' do
+      Request.diaspora_initialize(:from => eve.person, :to => alice.person,
+                                  :into => eve.aspects.first).receive(alice, eve.person)
+      alice.contact_for(eve.person).should be_sharing
+    end
+    
+    it 'shares back if auto_following is enabled' do
+      alice.auto_follow_back = true
+      alice.auto_follow_back_aspect = alice.aspects.first
+      alice.save
+      
+      Request.diaspora_initialize(:from => eve.person, :to => alice.person,
+                                  :into => eve.aspects.first).receive(alice, eve.person)
+      
+      eve.contact_for(alice.person).should be_sharing
+    end
+    
+    it 'shares not back if auto_following is not enabled' do
+      alice.auto_follow_back = false
+      alice.auto_follow_back_aspect = alice.aspects.first
+      alice.save
+      
+      Request.diaspora_initialize(:from => eve.person, :to => alice.person,
+                                  :into => eve.aspects.first).receive(alice, eve.person)
+      
+      eve.contact_for(alice.person).should be_nil
+    end
+    
+    it 'shares not back if already sharing' do
+      alice.auto_follow_back = true
+      alice.auto_follow_back_aspect = alice.aspects.first
+      alice.save
+      
+      contact = FactoryGirl.build:contact, :user => alice, :person => eve.person,
+                                  :receiving => true, :sharing => false
+      contact.save
+      
+      alice.should_not_receive(:share_with)
+      
+      Request.diaspora_initialize(:from => eve.person, :to => alice.person,
+                                  :into => eve.aspects.first).receive(alice, eve.person)
     end
   end
 
-  describe 'xml' do
+  context 'xml' do
     before do
-      @request = Request.new(:from => user.person, :to => user2.person, :into => aspect) 
+      @request = Request.diaspora_initialize(:from => alice.person, :to => eve.person, :into => @aspect)
       @xml = @request.to_xml.to_s
     end
+
     describe 'serialization' do
-      it 'should not generate xml for the User as a Person' do
-        @xml.should_not include user.person.profile.first_name
-      end
-
-      it 'should serialize the handle and not the sender' do
-        @xml.should include user.person.diaspora_handle
-      end
-
-      it 'serializes the intended recipient handle' do
-        @xml.should include user2.person.diaspora_handle
-      end
-
-      it 'should not serialize the exported key' do
-        @xml.should_not include user.person.exported_key
-      end
-
-      it 'does not serialize the id' do
-        @xml.should_not include @request.id.to_s
+      it 'produces valid xml' do
+        @xml.should include alice.person.diaspora_handle
+        @xml.should include eve.person.diaspora_handle
+        @xml.should_not include alice.person.exported_key
+        @xml.should_not include alice.person.profile.first_name
       end
     end
 
-    describe 'marshalling' do
-      before do
-        @marshalled = Request.from_xml @xml
-      end
-      it 'marshals the sender' do
-        @marshalled.from.should == user.person
-      end
-      it 'marshals the recipient' do
-        @marshalled.to.should == user2.person
-      end
-      it 'knows nothing about the aspect' do
-        @marshalled.into.should be_nil
-      end
-    end
-    describe 'marshalling with diaspora wrapper' do
-      before do
-        @d_xml = @request.to_diaspora_xml
-        @marshalled = Diaspora::Parser.from_xml @d_xml
-      end
-      it 'marshals the sender' do
-        @marshalled.from.should == user.person
-      end
-      it 'marshals the recipient' do
-        @marshalled.to.should == user2.person
-      end
-      it 'knows nothing about the aspect' do
-        @marshalled.into.should be_nil
-      end
-    end
-  end
-  
-  context 'mailers' do
-    context 'sugar around contacts' do
-      before do
-        Request.should_receive(:async).and_return(Request)
-        @mock_request = mock()
-        @mock_request.should_receive(:commit!)
-      end
-      
-      describe '.send_request_accepted' do
-        it 'should make a call to push to the queue' do
-          Request.should_receive(:send_request_accepted!).with(user.id, person.id, aspect.id).and_return(@mock_request)
-          Request.send_request_accepted(user, person, aspect)
-        end
-      end
-    
-      describe '.send_new_request' do
-        it 'should make a call to push to the queue' do
-          Request.should_receive(:send_new_request!).with(user.id, person.id).and_return(@mock_request)
-          Request.send_new_request(user, person)
-        end
-      end
-    end
-    
-    context 'actual calls to mailer' do
-      before do
-        @mock_mail = mock()
-        @mock_mail.should_receive(:deliver)
-      end
-      describe '.send_request_accepted!' do
-        it 'should deliver the message' do
-          Notifier.should_receive(:request_accepted).and_return(@mock_mail)
-          Request.send_request_accepted!(user.id, person.id, aspect.id)
-        end
-      end
-    
-      describe '.send_new_request' do
-        it 'should deliver the message' do
-          Notifier.should_receive(:new_request).and_return(@mock_mail)
-          Request.send_new_request!(user.id, person.id)
-        end
+    context 'marshalling' do
+      it 'produces a request object' do
+        marshalled = Request.from_xml @xml
+
+        marshalled.sender.should == alice.person
+        marshalled.recipient.should == eve.person
+        marshalled.aspect.should be_nil
       end
     end
   end

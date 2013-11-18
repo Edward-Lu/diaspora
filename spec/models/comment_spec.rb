@@ -1,179 +1,126 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
 require 'spec_helper'
+require Rails.root.join("spec", "shared_behaviors", "relayable")
 
 describe Comment do
-  let(:user)    {make_user}
-  let(:aspect)  {user.aspects.create(:name => "Doofuses")}
+  before do
+    @alices_aspect = alice.aspects.first
+    @status = bob.post(:status_message, :text => "hello", :to => bob.aspects.first.id)
+  end
 
-  let(:user2)   {make_user}
-  let(:aspect2) {user2.aspects.create(:name => "Lame-faces")}
+  describe 'comment#notification_type' do
+    it "returns 'comment_on_post' if the comment is on a post you own" do
+      comment = alice.comment!(@status, "why so formal?")
+      comment.notification_type(bob, alice.person).should == Notifications::CommentOnPost
+    end
 
-  let!(:connecting) { connect_users(user, aspect, user2, aspect2) }
+    it 'returns false if the comment is not on a post you own and no one "also_commented"' do
+      comment = alice.comment!(@status, "I simply felt like issuing a greeting.  Do step off.")
+      comment.notification_type(eve, alice.person).should be_false
+    end
 
-  it 'validates that the handle belongs to the person' do
-    user_status = user.post(:status_message, :message => "hello", :to => aspect.id)
-    comment = Comment.new(:person_id => user2.person.id, :text => "hey", :post => user_status)
-    comment.valid?
-    comment.errors.full_messages.should include "Diaspora handle and person handle must match"
+    context "also commented" do
+      before do
+        alice.comment!(@status, "a-commenta commenta")
+        @comment = eve.comment!(@status, "I also commented on the first user's post")
+      end
+
+      it 'does not return also commented if the user commented' do
+        @comment.notification_type(eve, alice.person).should == false
+      end
+
+      it "returns 'also_commented' if another person commented on a post you commented on" do
+        @comment.notification_type(alice, alice.person).should == Notifications::AlsoCommented
+      end
+    end
   end
 
   describe 'User#comment' do
-    before do
-      @status = user.post(:status_message, :message => "hello", :to => aspect.id)
-    end
-
-    it "should be able to comment on his own status" do
-      @status.comments.should == []
-
-      user.comment "Yeah, it was great", :on => @status
+    it "should be able to comment on one's own status" do
+      alice.comment!(@status, "Yeah, it was great")
       @status.reload.comments.first.text.should == "Yeah, it was great"
     end
 
-    it "should be able to comment on a person's status" do
-      user2.comment "sup dog", :on => @status
+    it "should be able to comment on a contact's status" do
+      bob.comment!(@status, "sup dog")
       @status.reload.comments.first.text.should == "sup dog"
     end
+
+    it 'does not multi-post a comment' do
+      lambda {
+        alice.comment!(@status, 'hello')
+      }.should change { Comment.count }.by(1)
+    end
   end
 
-  it 'should not send out comments when we have no people' do
-    status = Factory.create(:status_message, :person => user.person)
-    User::QUEUE.should_not_receive(:add_post_request)
-    user.comment "sup dog", :on => status
+  describe 'counter cache' do
+    it 'increments the counter cache on its post' do
+      lambda {
+        alice.comment!(@status, "oh yeah")
+      }.should change{
+        @status.reload.comments_count
+      }.by(1)
+    end
   end
 
-  describe 'comment propagation' do
+  describe 'xml' do
     before do
-      @person = Factory.create(:person)
-      user.activate_contact(@person, Aspect.first(:id => aspect.id))
-
-      @person2 = Factory.create(:person)
-      @person_status = Factory.build(:status_message, :person => @person)
-
-      user.reload
-      @user_status = user.post :status_message, :message => "hi", :to => aspect.id
-
-      aspect.reload
-      user.reload
+      @commenter = FactoryGirl.create(:user)
+      @commenter_aspect = @commenter.aspects.create(:name => "bruisers")
+      connect_users(alice, @alices_aspect, @commenter, @commenter_aspect)
+      @post = alice.post :status_message, :text => "hello", :to => @alices_aspect.id
+      @comment = @commenter.comment!(@post, "Fool!")
+      @xml = @comment.to_xml.to_s
     end
 
-    it "should send a user's comment on a person's post to that person" do
-      User::QUEUE.should_receive(:add_post_request).once
-      user.comment "yo", :on => @person_status
+    it 'serializes the sender handle' do
+      @xml.include?(@commenter.diaspora_handle).should be_true
     end
 
-    it 'should send a user comment on his own post to lots of people' do
-      User::QUEUE.should_receive(:add_post_request).once
-
-      user2.raw_visible_posts.count.should == 0
-
-      user.comment "yo", :on => @user_status
-
-      user2.reload
-      user2.raw_visible_posts.count.should == 1
+    it 'serializes the post_guid' do
+      @xml.should include(@post.guid)
     end
 
-    it 'should send a comment a person made on your post to all people' do
-      comment = Comment.new(:person_id => @person.id, :diaspora_handle => @person.diaspora_handle, :text => "cats", :post => @user_status)
-      User::QUEUE.should_receive(:add_post_request).once
-      user.receive comment.to_diaspora_xml, @person
-    end
-
-    it 'should send a comment a user made on your post to all people' do
-      comment = user2.comment( "balls", :on => @user_status)
-      User::QUEUE.should_receive(:add_post_request).once
-      user.receive comment.to_diaspora_xml, user2.person
-    end
-
-    context 'posts from a remote person' do
-      before(:all) do
-        stub_comment_signature_verification
-      end
-      
-      it 'should not send a comment a person made on his own post to anyone' do
-        User::QUEUE.should_not_receive(:add_post_request)
-        comment = Comment.new(:person_id => @person.id, :diaspora_handle => @person.diaspora_handle, :text => "cats", :post => @person_status)
-        user.receive comment.to_diaspora_xml, @person
+    describe 'marshalling' do
+      before do
+        @marshalled_comment = Comment.from_xml(@xml)
       end
 
-      it 'should not send a comment a person made on a person post to anyone' do
-        User::QUEUE.should_not_receive(:add_post_request)
-        comment = Comment.new(:person_id => @person2.id, :diaspora_handle => @person.diaspora_handle, :text => "cats", :post => @person_status)
-        user.receive comment.to_diaspora_xml, @person
+      it 'marshals the author' do
+        @marshalled_comment.author.should == @commenter.person
       end
 
-      after(:all) do
-        unstub_mocha_stubs
+      it 'marshals the post' do
+        @marshalled_comment.post.should == @post
       end
-  end
-
-    it 'should not clear the aspect post array on receiving a comment' do
-      aspect.post_ids.include?(@user_status.id).should be true
-      comment = Comment.new(:person_id => @person.id, :diaspora_handle => @person.diaspora_handle, :text => "cats", :post => @user_status)
-
-      user.receive comment.to_diaspora_xml, @person
-
-      aspect.reload
-      aspect.post_ids.include?(@user_status.id).should be true
-    end
-  end
-  describe 'serialization' do
-    it 'should serialize the handle and not the sender' do
-      commenter = make_user
-      commenter_aspect = commenter.aspects.create(:name => "bruisers")
-      connect_users(user, aspect, commenter, commenter_aspect)
-      post = user.post :status_message, :message => "hello", :to => aspect.id
-      comment = commenter.comment "Fool!", :on => post
-      comment.person.should_not == user.person
-      xml = comment.to_diaspora_xml
-      xml.include?(commenter.person.id.to_s).should be false
-      xml.include?(commenter.diaspora_handle).should be true
     end
   end
 
-  describe 'comments' do
+  describe 'it is relayable' do
     before do
-      @remote_message = user2.post :status_message, :message => "hello", :to => aspect2.id
-      @message = user.post :status_message, :message => "hi", :to => aspect.id
+      @local_luke, @local_leia, @remote_raphael = set_up_friends
+      @remote_parent = FactoryGirl.build(:status_message, :author => @remote_raphael)
+      @local_parent = @local_luke.post :status_message, :text => "hi", :to => @local_luke.aspects.first
+
+      @object_by_parent_author = @local_luke.comment!(@local_parent, "yo")
+      @object_by_recipient = @local_leia.build_comment(:text => "yo", :post => @local_parent)
+      @dup_object_by_parent_author = @object_by_parent_author.dup
+
+      @object_on_remote_parent = @local_luke.comment!(@remote_parent, "Yeah, it was great")
     end
 
-    it 'should attach the creator signature if the user is commenting' do
-      user.comment "Yeah, it was great", :on => @remote_message
-      @remote_message.comments.first.signature_valid?.should be true
-    end
+    let(:build_object) { alice.build_comment(:post => @status, :text => "why so formal?") }
+    it_should_behave_like 'it is relayable'
+  end
 
-    it 'should sign the comment if the user is the post creator' do
-      message = user.post :status_message, :message => "hi", :to => aspect.id
-      user.comment "Yeah, it was great", :on => message
-      message.comments.first.signature_valid?.should be true
-      message.comments.first.verify_post_creator_signature.should be true
+  describe 'tags' do
+    before do
+      @object = FactoryGirl.build(:comment)
     end
-
-    it 'should verify a comment made on a remote post by a different contact' do
-      comment = Comment.new(:person => user2.person, :text => "cats", :post => @remote_message)
-      comment.creator_signature = comment.send(:sign_with_key,user2.encryption_key)
-      comment.signature_valid?.should be true
-      comment.verify_post_creator_signature.should be false
-      comment.post_creator_signature = comment.send(:sign_with_key,user.encryption_key)
-      comment.verify_post_creator_signature.should be true
-    end
-
-    it 'should reject comments on a remote post with only a creator sig' do
-      comment = Comment.new(:person => user2.person, :text => "cats", :post => @remote_message)
-      comment.creator_signature = comment.send(:sign_with_key,user2.encryption_key)
-      comment.signature_valid?.should be true
-      comment.verify_post_creator_signature.should be false
-    end
-
-    it 'should receive remote comments on a user post with a creator sig' do
-      comment = Comment.new(:person => user2.person, :text => "cats", :post => @message)
-      comment.creator_signature = comment.send(:sign_with_key,user2.encryption_key)
-      comment.signature_valid?.should be true
-      comment.verify_post_creator_signature.should be false
-    end
-
+    it_should_behave_like 'it is taggable'
   end
 
 end

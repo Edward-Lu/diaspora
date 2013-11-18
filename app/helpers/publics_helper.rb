@@ -1,4 +1,4 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
@@ -18,10 +18,4 @@ module PublicsHelper
     end
   end
 
-  def terse_url(full_url)
-    terse = full_url.gsub(/https?:\/\//, '')
-    terse.gsub!(/www\./, '')
-    terse = terse.chop! if terse[-1, 1] == '/'
-    terse
-  end
 end

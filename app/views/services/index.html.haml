@@ -1,28 +1,18 @@
--#   Copyright (c) 2010, Diaspora Inc.  This file is
+-#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 -#   licensed under the Affero General Public License version 3 or later.  See
 -#   the COPYRIGHT file.
+
+- content_for :page_title do
+  = t('.edit_services')
 
 #section_header
   %h2
     = t('settings')
-  %ul#settings_nav
-    %li=link_to t('profile'), edit_person_path(current_user.person)
-    %li=link_to t('account'), edit_user_path(current_user)
-    %li=link_to t('_services'), services_path
+  = render 'shared/settings_nav'
 
-.span-19.prepend-5.last
-  %h2
-    = t('_services')
+.span-14.prepend-5.last
+  = render 'shared/add_remove_services'
 
-  %ul
-    - for service in @services
-      %h3
-        %b= service.provider
-        = t('.logged_in_as')
-        %b
-          = service.nickname
-        = link_to t('.disconnect'), service, :confirm => t('.really_disconnect', :service => service.provider), :method => :delete
-
-  %h4= link_to t('.connect_to_twitter'), "/auth/twitter" if SERVICES['twitter']['consumer_key']!= ""
-  %h4= link_to t('.connect_to_facebook'), "/auth/facebook" if SERVICES['facebook']['app_id'] !=""
-
+.span-5
+  %p
+    = t('.services_explanation')

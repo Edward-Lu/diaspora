@@ -1,111 +1,128 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
 class AspectsController < ApplicationController
   before_filter :authenticate_user!
 
-  respond_to :html
-  respond_to :json, :only => :show
-
-  def index
-    @posts  = current_user.visible_posts(:by_members_of => :all).paginate :page => params[:page], :per_page => 15, :order => 'created_at DESC'
-    @aspect = :all
-    
-    if current_user.getting_started == true
-      redirect_to getting_started_path
-    end
-  end
+  respond_to :html,
+             :js,
+             :json
 
   def create
-    @aspect = current_user.aspects.create(params[:aspect])
-    if @aspect.valid?
-      flash[:notice] = I18n.t('aspects.create.success')
-      respond_with @aspect
+    @aspect = current_user.aspects.build(aspect_params)
+    aspecting_person_id = params[:aspect][:person_id]
+
+    if @aspect.save
+      flash[:notice] = I18n.t('aspects.create.success', :name => @aspect.name)
+
+      if current_user.getting_started || request.referer.include?("contacts")
+        redirect_to :back
+      elsif aspecting_person_id.present?
+        connect_person_to_aspect(aspecting_person_id)
+      else
+        redirect_to contacts_path(:a_id => @aspect.id)
+      end
     else
-      flash[:error] = I18n.t('aspects.create.failure')
-      redirect_to :back
+      respond_to do |format|
+        format.js { render :text => I18n.t('aspects.create.failure'), :status => 422 }
+        format.html do
+          flash[:error] = I18n.t('aspects.create.failure')
+          redirect_to :back
+        end
+      end
     end
   end
 
   def new
     @aspect = Aspect.new
+    @person_id = params[:person_id]
+    @remote = params[:remote] == "true"
+    respond_to do |format|
+      format.html { render :layout => false }
+    end
   end
 
   def destroy
-    @aspect = current_user.aspect_by_id params[:id]
+    @aspect = current_user.aspects.where(:id => params[:id]).first
 
     begin
-      current_user.drop_aspect @aspect
-      flash[:notice] = I18n.t 'aspects.destroy.success',:name => @aspect.name
-    rescue RuntimeError => e 
-      flash[:error] = e.message
+      @aspect.destroy
+      flash[:notice] = I18n.t 'aspects.destroy.success', :name => @aspect.name
+    rescue ActiveRecord::StatementInvalid => e
+      flash[:error] = I18n.t 'aspects.destroy.failure', :name => @aspect.name
     end
-
-    respond_with :location => aspects_manage_path
+    if request.referer.include?('contacts')
+      redirect_to contacts_path
+    else
+      redirect_to aspects_path
+    end
   end
 
   def show
-    @aspect = current_user.aspect_by_id params[:id]
-    unless @aspect
-      render :file => "#{Rails.root}/public/404.html", :layout => false, :status => 404
+    if @aspect = current_user.aspects.where(:id => params[:id]).first
+      redirect_to aspects_path('a_ids[]' => @aspect.id)
     else
-      @aspect_contacts = @aspect.contacts
-      @posts           = current_user.visible_posts( :by_members_of => @aspect ).paginate :per_page => 15, :order => 'created_at DESC'
-      respond_with @aspect
+      redirect_to aspects_path
     end
   end
 
-  def manage
-    @aspect = :manage
-    @remote_requests = current_user.requests_for_me
+  def edit
+    @aspect = current_user.aspects.where(:id => params[:id]).includes(:contacts => {:person => :profile}).first
+
+    @contacts_in_aspect = @aspect.contacts.includes(:aspect_memberships, :person => :profile).all.sort! { |x, y| x.person.name <=> y.person.name }
+    c = Contact.arel_table
+    if @contacts_in_aspect.empty?
+      @contacts_not_in_aspect = current_user.contacts.includes(:aspect_memberships, :person => :profile).all.sort! { |x, y| x.person.name <=> y.person.name }
+    else
+      @contacts_not_in_aspect = current_user.contacts.where(c[:id].not_in(@contacts_in_aspect.map(&:id))).includes(:aspect_memberships, :person => :profile).all.sort! { |x, y| x.person.name <=> y.person.name }
+    end
+
+    @contacts = @contacts_in_aspect + @contacts_not_in_aspect
+
+    unless @aspect
+      render :file => Rails.root.join('public', '404.html').to_s, :layout => false, :status => 404
+    else
+      @aspect_ids = [@aspect.id]
+      @aspect_contacts_count = @aspect.contacts.size
+      render :layout => false
+    end
   end
 
   def update
-    @aspect = current_user.aspect_by_id(params[:id])
+    @aspect = current_user.aspects.where(:id => params[:id]).first
 
-    @aspect.update_attributes( params[:aspect] )
-    flash[:notice] = I18n.t 'aspects.update.success',:name => @aspect.name
-    respond_with @aspect
+    if @aspect.update_attributes!(aspect_params)
+      flash[:notice] = I18n.t 'aspects.update.success', :name => @aspect.name
+    else
+      flash[:error] = I18n.t 'aspects.update.failure', :name => @aspect.name
+    end
+    render :json => { :id => @aspect.id, :name => @aspect.name }
   end
 
-  def move_contact
-    unless current_user.move_contact( :person_id => params[:person_id], :from => params[:from], :to => params[:to][:to])
-      flash[:error] = I18n.t 'aspects.move_contact.error',:inspect => params.inspect
-    end
-    if aspect = current_user.aspect_by_id(params[:to][:to])
-      flash[:notice] = I18n.t 'aspects.move_contact.success'
-      render :nothing => true
+  def toggle_contact_visibility
+    @aspect = current_user.aspects.where(:id => params[:aspect_id]).first
+
+    if @aspect.contacts_visible?
+      @aspect.contacts_visible = false
     else
-      flash[:notice] = I18n.t 'aspects.move_contact.failure'
-      render aspects_manage_path
+      @aspect.contacts_visible = true
+    end
+    @aspect.save
+  end
+
+  private
+
+  def connect_person_to_aspect(aspecting_person_id)
+    @person = Person.find(aspecting_person_id)
+    if @contact = current_user.contact_for(@person)
+      @contact.aspects << @aspect
+    else
+      @contact = current_user.share_with(@person, @aspect)
     end
   end
 
-  def add_to_aspect
-    if current_user.add_person_to_aspect( params[:person_id], params[:aspect_id])
-      flash[:notice] =  I18n.t 'aspects.add_to_aspect.success'
-    else 
-      flash[:error] =  I18n.t 'aspects.add_to_aspect.failure'
-    end
-
-    if params[:manage]
-      redirect_to aspects_manage_path
-    else
-      redirect_to aspect_path(params[:aspect_id])
-    end
-  end
-
-  def remove_from_aspect
-    if current_user.delete_person_from_aspect( params[:person_id], params[:aspect_id])
-      flash[:notice] =  I18n.t 'aspects.remove_from_aspect.success'
-    else 
-      flash[:error] =  I18n.t 'aspects.remove_from_aspect.failure'
-    end
-    if params[:manage]
-      redirect_to aspects_manage_path
-    else
-      redirect_to aspect_path(params[:aspect_id])
-    end
+  def aspect_params
+    params.require(:aspect).permit(:name, :contacts_visible, :order_id)
   end
 end

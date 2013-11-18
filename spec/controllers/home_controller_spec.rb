@@ -1,29 +1,40 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2012, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
 require 'spec_helper'
 
 describe HomeController do
-  render_views
+  describe '#show' do
+    it 'does not redirect' do
+      sign_out :user
+      get :show
+      response.should_not be_redirect
+    end
 
-  before do
-    @user = make_user
-    sign_in @user
-    sign_out @user
+    context 'redirection' do
+      before do
+        sign_in alice
+      end
+
+      it 'points to the stream if a user has contacts' do
+        get :show, :home => true
+        response.should redirect_to(stream_path)
+      end
+    end
   end
 
-  describe '#show' do
-    it 'should show a login link if no user is not logged in' do
-      get :show 
-      response.body.should include("log in")
+  describe '#toggle_mobile' do
+    it 'changes :mobile to :html' do
+      session[:mobile_view] = true
+      get :toggle_mobile
+      session[:mobile_view].should be_false
     end
 
-    it 'should redirect to aspects index if user is logged in' do
-      sign_in @user
-      get :show 
-      response.should redirect_to aspects_path
+    it 'changes :html to :mobile' do
+      session[:mobile_view] = nil
+      get :toggle_mobile
+      session[:mobile_view].should be_true
     end
-
   end
 end

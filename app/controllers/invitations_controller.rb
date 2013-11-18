@@ -1,55 +1,105 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-class InvitationsController < Devise::InvitationsController
+class InvitationsController < ApplicationController
 
-  before_filter :check_token, :only => [:edit] 
+  before_filter :authenticate_user!, :only => [:new, :create]
 
+  def new
+    @invite_code = current_user.invitation_code
 
-  def create
-    begin
-      params[:user][:aspect_id] = params[:user].delete(:aspects)
-      message = params[:user].delete(:invite_messages)
-      params[:user][:invite_message] = message unless message == ""
-      self.resource = current_user.invite_user(params[resource_name])
-      flash[:notice] = I18n.t 'invitations.create.sent'
-    rescue RuntimeError => e
-      if  e.message == "You have no invites"
-        flash[:error] = I18n.t 'invitations.create.no_more'
-      elsif e.message == "You already invited this person"
-        flash[:error] = I18n.t 'invitations.create.already_sent'
-      elsif e.message == "You are already connected to this person"
-        flash[:error] = I18n.t 'invitations.create.already_contacts'
-      else
-        raise e
+    @invalid_emails = html_safe_string_from_session_array(:invalid_email_invites)
+    @valid_emails   = html_safe_string_from_session_array(:valid_email_invites)
+
+    respond_to do |format|
+      format.html do
+        render :layout => false
       end
     end
-    redirect_to after_sign_in_path_for(resource_name)
   end
 
-  def update
-    begin
-      user = User.find_by_invitation_token(params[:user][:invitation_token])
-      user.accept_invitation!(params[:user])
-    rescue MongoMapper::DocumentNotValid => e
-      user = nil
-      flash[:error] = e.message
-    end
-    if user
-      flash[:notice] = I18n.t 'registrations.create.success'
-      sign_in_and_redirect(:user, user)
+  # this is  for legacy invites.  We try to look the person who sent them the
+  # invite, and use their new invite code
+  # owe will be removing this eventually
+  # @depreciated
+  def edit
+    user = User.find_by_invitation_token(params[:invitation_token])
+    invitation_code = user.ugly_accept_invitation_code
+    redirect_to invite_code_path(invitation_code)
+  end
+
+  def email
+    @invitation_code =
+      if params[:invitation_token]
+        # this is  for legacy invites.
+        user = User.find_by_invitation_token(params[:invitation_token])
+
+        user.ugly_accept_invitation_code if user
+      else
+        params[:invitation_code]
+      end
+
+    if @invitation_code.present?
+      render 'notifier/invite', :layout => false
     else
-      redirect_to new_user_registration_path
-    end
-  end
+      flash[:error] = t('invitations.check_token.not_found')
 
-  protected
-
-  def check_token
-    if User.find_by_invitation_token(params[:invitation_token]).nil?
-      flash[:error] = I18n.t 'invitations.check_token.not_found'
       redirect_to root_url
     end
+  end
+
+  def create
+    emails = inviter_params[:emails].split(',').map(&:strip).uniq
+
+    valid_emails, invalid_emails = emails.partition { |email| valid_email?(email) }
+
+    session[:valid_email_invites] = valid_emails
+    session[:invalid_email_invites] = invalid_emails
+
+    unless valid_emails.empty?
+      Workers::Mail::InviteEmail.perform_async(valid_emails.join(','),
+                                               current_user.id,
+                                               inviter_params)
+    end
+
+    if emails.empty?
+      flash[:error] = t('invitations.create.empty')
+    elsif invalid_emails.empty?
+      flash[:notice] =  t('invitations.create.sent', :emails => valid_emails.join(', '))
+    elsif valid_emails.empty?
+      flash[:error] = t('invitations.create.rejected') +  invalid_emails.join(', ')
+    else
+      flash[:error] = t('invitations.create.sent', :emails => valid_emails.join(', '))
+      flash[:error] << '. '
+      flash[:error] << t('invitations.create.rejected') +  invalid_emails.join(', ')
+    end
+
+    redirect_to :back
+  end
+
+  def check_if_invites_open
+    unless AppConfig.settings.invitations.open?
+      flash[:error] = I18n.t 'invitations.create.no_more'
+
+      redirect_to :back
+    end
+  end
+
+  private
+  def valid_email?(email)
+    User.email_regexp.match(email).present?
+  end
+
+  def html_safe_string_from_session_array(key)
+    return "" unless session[key].present?
+    return "" unless session[key].respond_to?(:join)
+    value = session[key].join(', ').html_safe
+    session[key] = nil
+    return value
+  end
+
+  def inviter_params
+    params.require(:email_inviter).permit(:message, :locale, :emails)
   end
 end

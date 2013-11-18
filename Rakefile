@@ -1,4 +1,4 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
@@ -7,5 +7,12 @@
 
 require File.expand_path('../config/application', __FILE__)
 require 'rake'
+
+# for rake 0.9.0
+module Diaspora
+  class Application
+    include Rake::DSL
+  end
+end
 
 Diaspora::Application.load_tasks

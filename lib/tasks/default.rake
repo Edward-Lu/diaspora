@@ -1,3 +1,1 @@
-task :default => [:cucumber, :spec, :'jasmine:ci']
-
-task :'no-jasmine' => [:cucumber, :spec]
+task :default => [:spec, :cucumber, :'jasmine:ci']

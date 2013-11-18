@@ -1,14 +1,24 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
+#Excon needs to see the CA Cert Bundle file
+ENV['SSL_CERT_FILE'] = AppConfig.environment.certificate_authorities.get
 CarrierWave.configure do |config|
-  if ENV['S3_KEY'] && ENV['S3_SECRET'] && ENV['S3_BUCKET']
-    config.storage = :s3
-    config.s3_access_key_id = ENV['S3_KEY']
-    config.s3_secret_access_key = ENV['S3_SECRET']
-    config.s3_bucket = ENV['S3_BUCKET']
-    config.cache_dir = "#{Rails.root}/tmp/uploads"
+  if !Rails.env.test? && AppConfig.environment.s3.enable?
+    config.storage = :fog
+    config.cache_dir = Rails.root.join('tmp', 'uploads').to_s
+    config.fog_credentials = {
+        provider:              'AWS',
+        aws_access_key_id:     AppConfig.environment.s3.key.get,
+        aws_secret_access_key: AppConfig.environment.s3.secret.get,
+        region:                AppConfig.environment.s3.region.get
+    }
+    if AppConfig.environment.s3.cache?
+      config.fog_attributes['Cache-Control'] = 'max-age=31536000'
+    end
+
+    config.fog_directory = AppConfig.environment.s3.bucket.get
   else
     config.storage = :file
   end

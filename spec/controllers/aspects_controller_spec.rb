@@ -1,49 +1,89 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2010-2011, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
 require 'spec_helper'
 
 describe AspectsController do
-  render_views
-
   before do
-    @user                       = make_user
-    @aspect                     = @user.aspects.create(:name => "lame-os")
-    @aspect1                    = @user.aspects.create(:name => "another aspect")
-    @user2                      = make_user
-    @aspect2                    = @user2.aspects.create(:name => "party people")
-    connect_users(@user, @aspect, @user2, @aspect2)
-    @contact                    = @user.contact_for(@user2.person)
-    sign_in :user, @user
+    alice.getting_started = false
+    alice.save
+    sign_in :user, alice
+    @alices_aspect_1 = alice.aspects.where(:name => "generic").first
+    @alices_aspect_2 = alice.aspects.create(:name => "another aspect")
+
+    @controller.stub(:current_user).and_return(alice)
     request.env["HTTP_REFERER"] = 'http://' + request.host
   end
 
-  describe "#index" do
-    it "assigns @contacts to all the user's contacts" do
-      Factory.create :person
-      get :index
-      assigns[:contacts].should == @user.contacts
+
+  describe "#new" do
+    it "renders a remote form if remote is true" do
+      get :new, "remote" => "true"
+      response.should be_success
+      response.body.should =~ /#{Regexp.escape('data-remote="true"')}/
+    end
+    it "renders a non-remote form if remote is false" do
+      get :new, "remote" => "false"
+      response.should be_success
+      response.body.should_not =~ /#{Regexp.escape('data-remote="true"')}/
+    end
+    it "renders a non-remote form if remote is missing" do
+      get :new
+      response.should be_success
+      response.body.should_not =~ /#{Regexp.escape('data-remote="true"')}/
+    end
+  end
+
+  describe "#show" do
+    it "succeeds" do
+      get :show, 'id' => @alices_aspect_1.id.to_s
+      response.should be_redirect
+    end
+    it 'redirects on an invalid id' do
+      get :show, 'id' => 4341029835
+      response.should be_redirect
     end
   end
 
   describe "#create" do
-    describe "with valid params" do
+    context "with valid params" do
       it "creates an aspect" do
-        @user.aspects.count.should == 2
+        alice.aspects.count.should == 2
         post :create, "aspect" => {"name" => "new aspect"}
-        @user.reload.aspects.count.should == 3
+        alice.reload.aspects.count.should == 3
       end
-      it "redirects to the aspect page" do
+      it "redirects to the aspect's contact page" do
         post :create, "aspect" => {"name" => "new aspect"}
-        response.should redirect_to(aspect_path(Aspect.find_by_name("new aspect")))
+        response.should redirect_to(contacts_path(:a_id => Aspect.find_by_name("new aspect").id))
+      end
+
+      context "with person_id param" do
+        it "creates a contact if one does not already exist" do
+          lambda {
+            post :create, :format => 'js', :aspect => {:name => "new", :person_id => eve.person.id}
+          }.should change {
+            alice.contacts.count
+          }.by(1)
+        end
+
+        it "adds a new contact to the new aspect" do
+          post :create, :format => 'js', :aspect => {:name => "new", :person_id => eve.person.id}
+          alice.aspects.find_by_name("new").contacts.count.should == 1
+        end
+
+        it "adds an existing contact to the new aspect" do
+          post :create, :format => 'js', :aspect => {:name => "new", :person_id => bob.person.id}
+          alice.aspects.find_by_name("new").contacts.count.should == 1
+        end
       end
     end
-    describe "with invalid params" do
+
+    context "with invalid params" do
       it "does not create an aspect" do
-        @user.aspects.count.should == 2
+        alice.aspects.count.should == 2
         post :create, "aspect" => {"name" => ""}
-        @user.reload.aspects.count.should == 2
+        alice.reload.aspects.count.should == 2
       end
       it "goes back to the page you came from" do
         post :create, "aspect" => {"name" => ""}
@@ -52,84 +92,86 @@ describe AspectsController do
     end
   end
 
-  describe "#manage" do
-    it "succeeds" do
-      get :manage
-      response.should be_success
-    end
-    it "assigns aspect to manage" do
-      get :manage
-      assigns(:aspect).should == :manage
-    end
-    it "assigns remote_requests" do
-      get :manage
-      assigns(:remote_requests).should be_empty
-    end
-    context "when the user has pending requests" do
-      before do
-        requestor        = make_user
-        requestor_aspect = requestor.aspects.create(:name => "Meh")
-        requestor.send_contact_request_to(@user.person, requestor_aspect)
-
-        requestor.reload
-        requestor_aspect.reload
-        @user.reload
-      end
-      it "succeeds" do
-        get :manage
-        response.should be_success
-      end
-      it "assigns aspect to manage" do
-        get :manage
-        assigns(:aspect).should == :manage
-      end
-      it "assigns remote_requests" do
-        get :manage
-        assigns(:remote_requests).count.should == 1
-      end
-    end
-  end
-
-  describe "#move_contact" do
-    let(:opts) { {:person_id => "person_id", :from => "from_aspect_id", :to => {:to => "to_aspect_id"}} }
-    it 'calls the move_contact_method' do
-      pending "need to figure out what is the deal with remote requests"
-      @controller.stub!(:current_user).and_return(@user)
-      @user.should_receive(:move_contact).with(:person_id => "person_id", :from => "from_aspect_id", :to => "to_aspect_id")
-      post :move_contact, opts
-    end
-  end
-
   describe "#update" do
     before do
-      @aspect = @user.aspects.create(:name => "Bruisers")
+      @alices_aspect_1 = alice.aspects.create(:name => "Bruisers")
     end
+
     it "doesn't overwrite random attributes" do
-      new_user         = Factory.create :user
-      params           = {"name" => "Bruisers"}
+      new_user = FactoryGirl.create :user
+      params = {"name" => "Bruisers"}
       params[:user_id] = new_user.id
-      put('update', :id => @aspect.id, "aspect" => params)
-      Aspect.find(@aspect.id).user_id.should == @user.id
+      put('update', :id => @alices_aspect_1.id, "aspect" => params)
+      Aspect.find(@alices_aspect_1.id).user_id.should == alice.id
+    end
+
+    it "should return the name and id of the updated item" do
+      params = {"name" => "Bruisers"}
+      put('update', :id => @alices_aspect_1.id, "aspect" => params)
+      response.body.should == { :id => @alices_aspect_1.id, :name => "Bruisers" }.to_json
     end
   end
 
-  describe "#add_to_aspect" do
-    it 'adds the users to the aspect' do
-      @aspect1.reload
-      @aspect1.contacts.include?(@contact).should be false
-      post 'add_to_aspect', {:person_id => @user2.person.id, :aspect_id => @aspect1.id}
-      @aspect1.reload
-      @aspect1.contacts.include?(@contact).should be true
+  describe '#edit' do
+    before do
+      eve.profile.first_name = eve.profile.last_name = nil
+      eve.profile.save
+      eve.save
+
+      @zed = FactoryGirl.create(:user_with_aspect, :username => "zed")
+      @zed.profile.first_name = "zed"
+      @zed.profile.save
+      @zed.save
+      @katz = FactoryGirl.create(:user_with_aspect, :username => "katz")
+      @katz.profile.first_name = "katz"
+      @katz.profile.save
+      @katz.save
+
+      connect_users(alice, @alices_aspect_2, eve, eve.aspects.first)
+      connect_users(alice, @alices_aspect_2, @zed, @zed.aspects.first)
+      connect_users(alice, @alices_aspect_1, @katz, @katz.aspects.first)
+    end
+
+    it 'renders' do
+      get :edit, :id => @alices_aspect_1.id
+      response.should be_success
+    end
+
+    it 'assigns the contacts in alphabetical order with people in aspects first' do
+      get :edit, :id => @alices_aspect_2.id
+      assigns[:contacts].map(&:id).should == [alice.contact_for(eve.person), alice.contact_for(@zed.person), alice.contact_for(bob.person), alice.contact_for(@katz.person)].map(&:id)
+    end
+
+    it 'assigns all the contacts if noone is there' do
+      alices_aspect_3 = alice.aspects.create(:name => "aspect 3")
+
+      get :edit, :id => alices_aspect_3.id
+      assigns[:contacts].map(&:id).should == [alice.contact_for(bob.person), alice.contact_for(eve.person), alice.contact_for(@katz.person), alice.contact_for(@zed.person)].map(&:id)
+    end
+
+    it 'eager loads the aspect memberships for all the contacts' do
+      get :edit, :id => @alices_aspect_2.id
+      assigns[:contacts].each do |c|
+        c.aspect_memberships.loaded?.should be_true
+      end
     end
   end
 
-  describe "#remove_from_aspect" do
-    it 'adds the users to the aspect' do
-      @aspect.reload
-      @aspect.contacts.include?(@contact).should be true
-      post 'remove_from_aspect', {:person_id => @user2.person.id, :aspect_id => @aspect1.id}
-      @aspect1.reload
-      @aspect1.contacts.include?(@contact).should be false
+  describe "#toggle_contact_visibility" do
+    it 'sets contacts visible' do
+      @alices_aspect_1.contacts_visible = false
+      @alices_aspect_1.save
+
+      get :toggle_contact_visibility, :format => 'js', :aspect_id => @alices_aspect_1.id
+      @alices_aspect_1.reload.contacts_visible.should be_true
+    end
+
+    it 'sets contacts hidden' do
+      @alices_aspect_1.contacts_visible = true
+      @alices_aspect_1.save
+
+      get :toggle_contact_visibility, :format => 'js', :aspect_id => @alices_aspect_1.id
+      @alices_aspect_1.reload.contacts_visible.should be_false
     end
   end
 end

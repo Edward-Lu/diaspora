@@ -1,80 +1,139 @@
-#   Copyright (c) 2010, Diaspora Inc.  This file is
+#   Copyright (c) 2009, Diaspora Inc.  This file is
 #   licensed under the Affero General Public License version 3 or later.  See
 #   the COPYRIGHT file.
 
-class Photo < Post
-  require 'carrierwave/orm/mongomapper'
-  include MongoMapper::Document
-  mount_uploader :image, ImageUploader
+class Photo < ActiveRecord::Base
+  include Diaspora::Federated::Shareable
+  include Diaspora::Commentable
+  include Diaspora::Shareable
 
-  xml_accessor :remote_photo
-  xml_accessor :caption
+  # NOTE API V1 to be extracted
+  acts_as_api
+  api_accessible :backbone do |t|
+    t.add :id
+    t.add :guid
+    t.add :created_at
+    t.add :author
+    t.add lambda { |photo|
+      { :small => photo.url(:thumb_small),
+        :medium => photo.url(:thumb_medium),
+        :large => photo.url(:scaled_full) }
+    }, :as => :sizes
+    t.add lambda { |photo|
+      { :height => photo.height,
+        :width => photo.width }
+    }, :as => :dimensions
+  end
 
-  key :caption,  String
-  key :remote_photo_path
-  key :remote_photo_name
-  key :random_string
+  mount_uploader :processed_image, ProcessedImage
+  mount_uploader :unprocessed_image, UnprocessedImage
 
-  timestamps!
+  xml_attr :remote_photo_path
+  xml_attr :remote_photo_name
 
-  attr_accessible :caption
+  xml_attr :text
+  xml_attr :status_message_guid
+
+  xml_attr :height
+  xml_attr :width
+
+  belongs_to :status_message, :foreign_key => :status_message_guid, :primary_key => :guid
+  validates_associated :status_message
+  delegate :author_name, to: :status_message, prefix: true
+
+  validate :ownership_of_status_message
 
   before_destroy :ensure_user_picture
+  after_destroy :clear_empty_status_message
 
-  def self.instantiate(params = {})
-    photo = super(params)
-    image_file = params.delete(:user_file)
-    photo.random_string = gen_random_string(10)
+  after_create do
+    queue_processing_job if self.author.local?
+  end
 
-    photo.image.store! image_file
+  def clear_empty_status_message
+    if self.status_message_guid && self.status_message.text_and_photos_blank?
+      self.status_message.destroy
+    else
+      true
+    end
+  end
+
+  def ownership_of_status_message
+    message = StatusMessage.find_by_guid(self.status_message_guid)
+    if self.status_message_guid && message
+      self.diaspora_handle == message.diaspora_handle
+    else
+      true
+    end
+  end
+
+  def self.diaspora_initialize(params = {})
+    photo = self.new params.to_hash.slice(:text, :pending)
+    photo.author = params[:author]
+    photo.public = params[:public] if params[:public]
+    photo.pending = params[:pending] if params[:pending]
+    photo.diaspora_handle = photo.author.diaspora_handle
+
+    photo.random_string = SecureRandom.hex(10)
+
+    if params[:user_file]
+      image_file = params.delete(:user_file)
+      photo.unprocessed_image.store! image_file
+
+    elsif params[:image_url]
+      photo.remote_unprocessed_image_url = params[:image_url]
+      photo.unprocessed_image.store!
+    end
+
+    photo.update_remote_path
+
     photo
   end
 
-  def remote_photo
-    image.url.nil? ? (remote_photo_path + '/' + remote_photo_name) : image.url
+  def processed?
+    processed_image.path.present?
   end
 
-  def remote_photo= remote_path
+  def update_remote_path
+    unless self.unprocessed_image.url.match(/^https?:\/\//)
+      remote_path = "#{AppConfig.pod_uri.to_s.chomp("/")}#{self.unprocessed_image.url}"
+    else
+      remote_path = self.unprocessed_image.url
+    end
+
     name_start = remote_path.rindex '/'
-    self.remote_photo_path = remote_path.slice(0, name_start )
+    self.remote_photo_path = "#{remote_path.slice(0, name_start)}/"
     self.remote_photo_name = remote_path.slice(name_start + 1, remote_path.length)
   end
 
   def url(name = nil)
     if remote_photo_path
-      name = name.to_s + "_" if name
-      person.url.chop + remote_photo_path + "/" + name.to_s + remote_photo_name
+      name = name.to_s + '_' if name
+      remote_photo_path + name.to_s + remote_photo_name
+    elsif processed?
+      processed_image.url(name)
     else
-      image.url name
+      unprocessed_image.url(name)
     end
   end
 
   def ensure_user_picture
-    people = Person.all('profile.image_url' => absolute_url(:thumb_medium) )
-    people.each{ |person|
-      person.profile.update_attributes(:image_url => nil)
+    profiles = Profile.where(:image_url => url(:thumb_large))
+    profiles.each { |profile|
+      profile.image_url = nil
+      profile.save
     }
   end
 
-  def thumb_hash
-    {:thumb_url => url(:thumb_medium), :id => id, :album_id => nil}
+  def queue_processing_job
+    Workers::ProcessPhoto.perform_async(self.id)
   end
 
   def mutable?
     true
   end
 
-  def absolute_url *args
-    pod_url = APP_CONFIG[:pod_url].dup
-    pod_url.chop! if APP_CONFIG[:pod_url][-1,1] == '/'
-    "#{pod_url}#{url(*args)}"
-  end
-  
-  def self.gen_random_string(len)
-    chars = ("a".."z").to_a + ("A".."Z").to_a + ("0".."9").to_a
-    string = ""
-    1.upto(len) { |i| string << chars[rand(chars.size-1)] }
-    return string
-  end
+  scope :on_statuses, lambda { |post_guids|
+    where(:status_message_guid => post_guids)
+  }
 end
-

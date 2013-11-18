@@ -1,34 +1,85 @@
--#   Copyright (c) 2010, Diaspora Inc.  This file is
--#   licensed under the Affero General Public License version 3 or later.  See
--#   the COPYRIGHT file.
+-# Copyright (c) 2010-2011, Diaspora Inc. This file is
+-# licensed under the Affero General Public License version 3 or later. See
+-# the COPYRIGHT file.
 
 !!!
-%html{:lang => I18n.locale.to_s}
+%html{:lang => I18n.locale.to_s, :dir => (rtl?) ? 'rtl' : 'ltr'}
   %head
     %title
-      = "#{current_user.real_name} | diaspora" if current_user
+      = pod_name
 
-    %meta{"http-equiv"=>"Content-Type", :content=>"text/html; charset=utf-8"}/
+    %meta{:name => "description", :content => "diaspora* mobile"}/
+    %meta{:name => "author", :content => "Diaspora, Inc."}/
+    %meta{:charset => 'utf-8'}/
+    %meta{:property => "og:site_name", :content => "#{AppConfig.settings.pod_name}"}/
 
-    = javascript_include_tag 'vendor/jquery144.min'
-    = javascript_include_tag 'vendor/jquery.mobile-1.0a1.js', 'rails' 
-    = stylesheet_link_tag 'vendor/jquery_mobile.min'
-    = stylesheet_link_tag 'mobile'
+    / Viewport scale
+    %meta{:name =>'viewport', :content => "width=device-width, minimum-scale=1 maximum-scale=1"}/
+    %meta{:name => "HandheldFriendly", :content => "True"}/
+    %meta{:name => "MobileOptimized", :content => "320"}/
+    / Force cleartype on WP7
+    %meta{'http-equiv' => "cleartype", :content => 'on'}/
+
+    / Home screen icon (sized for retina displays)
+    %link{:rel => 'apple-touch-icon', :href => '/apple-touch-icon.png'}
+    / For Nokia devices
+    %link{:rel => 'shortcut icon', :href => '/apple-touch-icon.png'}
+
+    / iOS mobile web app indicator
+    / NOTE(we will enable these once we don't have to rely on back/forward buttons anymore)
+    /%meta{:name => "apple-mobile-web-app-capable", :content => "yes"}
+    /%link{:rel => "apple-touch-startup-image", :href => "/images/apple-splash.png"}
+
+    = chartbeat_head_block
+
+    / Stylesheets
+
+    = stylesheet_link_tag :mobile, :format => 'all'
+    = yield(:custom_css)
+
+
     = csrf_meta_tag
+
+    - if rtl?
+      = stylesheet_link_tag :rtl, :media => 'all'
 
     = yield(:head)
 
   %body
-    #content{:data => {:role => 'page'}}
-      %div{:data => {:role => 'header', :nobackbtn => 'true'}}
-        %h1
-          = person_image_tag (current_user.person)
-          = current_user.real_name 
-      %div{:data => {:role => 'fieldcontain'}}
-        =select_tag "aspects", options_from_collection_for_select(@aspects, "id", "name")
-      
-      = yield
-           
-      %div{:data => {:role => 'fieldcontain'}}
-        = form_tag(people_path, :method => 'get') do
-          = text_field_tag 'q', nil, :placeholder => t('search'), :type => 'search'
+    .navbar.navbar-fixed-top
+      .navbar-inner
+        .container{:style => "position: relative;"}
+          = link_to(image_tag('branding/header-logo2x.png', :height => 40, :width => 40, :id => 'header_title'), stream_path)
+
+          - if user_signed_in?
+            #nav_badges
+              = link_to(image_tag('icons/my_activity.png', :class => 'my_activity'), activity_stream_path, :class => "badge badge-inverse", :id => "my_activity_badge")
+              = link_to(image_tag('icons/notifications_grey.png', :height => 16, :width => 16, :id => 'notification-flag'), notifications_path, :class => "badge badge-inverse", :id => "notification_badge")
+              - if current_user.unread_notifications.count > 0
+                .badge_count{:id => "notification"}
+                  = current_user.unread_notifications.count
+              = link_to(image_tag('icons/mail_grey.png', :height => 11, :width => 17), conversations_path, :class => "badge badge-inverse", :id => "conversations_badge")
+              - if current_user.unread_message_count > 0
+                .badge_count{:id => "conversation"}
+                  = current_user.unread_message_count
+              = link_to(image_tag('icons/search_grey.png', :height => 14, :width => 14), people_path, :class => "badge badge-inverse", :id => "people_badge")
+              = link_to(image_tag('icons/user_grey.png', :height => 16, :width => 16), contacts_path, :class => "badge badge-inverse", :id => "contacts_badge")
+              - if yield(:header_action).present?
+                = yield(:header_action)
+              - else
+                = link_to(image_tag('icons/compose_mobile2.png', :class => 'compose_icon'), new_status_message_path)
+
+    #main.container{:role => "main"}
+      .row
+        - if current_page?(:activity_stream)
+          %h3
+            = t('streams.activity.title')
+        = yield
+
+    - if user_signed_in?
+      = render :partial =>'shared/footer'
+
+    / javascripts at the bottom
+    = jquery_include_tag
+    = javascript_include_tag :mobile
+    = include_chartbeat
